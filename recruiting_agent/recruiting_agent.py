@@ -1,9 +1,9 @@
 """Recruiting assistant agent.
 
 A deep agent (built with ``deepagents.create_deep_agent``) with
-seven tools - lookup_job_posting, build_candidate_profile, get_candidate, 
-get_current_recruiter, send_candidate_email, score_candidate, and 
-add_candidate_skill. The tools call the data-access layer in ``data_service`` for 
+seven tools - lookup_job_posting, build_candidate_profile, get_candidate,
+get_current_recruiter, send_candidate_email, score_candidate, and
+add_candidate_skill. The tools call the data-access layer in ``data_service`` for
 storage and retrieval.
 
 Configure credentials via environment variables or a .env file
@@ -20,21 +20,23 @@ import random
 import uuid
 
 from dotenv import load_dotenv
+
 load_dotenv(override=True)
 
 # Enable LangSmith tracing; project / API key come from the environment or .env.
 os.environ.setdefault("LANGSMITH_TRACING", "true")
 
-from pydantic import BaseModel
-from langchain_core.tools import tool
-from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
+from langchain_anthropic import ChatAnthropic
+from pydantic import BaseModel
 
 from . import data_service
 from .data_service import RECRUITER_IDS
 
-MODEL_NAME = "gpt-4o-mini"
+MODEL_NAME = "claude-haiku-4-5-20251001"
+
 
 # ---------------------------------------------------------------------------
 # Job posting schema
@@ -58,6 +60,7 @@ class JobPosting(BaseModel):
     description: str
     posted_date: str
     status: str
+
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -104,6 +107,7 @@ SCORING_PROMPT = (
 
 from typing import Literal
 
+
 class RubricBreakdown(BaseModel):
     experience: float
     skills_match: float
@@ -118,32 +122,47 @@ class CandidateScore(BaseModel):
     rubric_breakdown: RubricBreakdown
 
 
-_scoring_llm = ChatOpenAI(model=MODEL_NAME, temperature=0).with_structured_output(CandidateScore)
+_scoring_llm = ChatAnthropic(model=MODEL_NAME, temperature=0).with_structured_output(
+    CandidateScore
+)
 
 
 def _job_has_required_fields(job):
     "Return True if the job has the fields needed to score against it."
-    return bool(job) and bool(job.get("required_skills")) and \
-        job.get("min_years_experience") is not None and bool(job.get("description"))
+    return (
+        bool(job)
+        and bool(job.get("required_skills"))
+        and job.get("min_years_experience") is not None
+        and bool(job.get("description"))
+    )
 
 
 @tool
-def score_candidate(candidate_profile: dict, job_description: dict | None = None) -> dict:
+def score_candidate(
+    candidate_profile: dict, job_description: dict | None = None
+) -> dict:
     "Score a candidate profile against a job description on a 1-100 scale with a justification."
     if job_description is None or not _job_has_required_fields(job_description):
         return {"score": None, "error": "Cannot score without a valid job description."}
     # Score against the candidate's saved skills of record.
     cid = candidate_profile.get("candidate_id")
     if cid is not None:
-        candidate_profile = {**candidate_profile, "skills": data_service.fetch_skills(cid)}
+        candidate_profile = {
+            **candidate_profile,
+            "skills": data_service.fetch_skills(cid),
+        }
     user = (
-        "Job description:\n" + json.dumps(job_description, indent=2) +
-        "\n\nCandidate profile:\n" + json.dumps(candidate_profile, indent=2)
+        "Job description:\n"
+        + json.dumps(job_description, indent=2)
+        + "\n\nCandidate profile:\n"
+        + json.dumps(candidate_profile, indent=2)
     )
-    result = _scoring_llm.invoke([
-        {"role": "system", "content": SCORING_PROMPT},
-        {"role": "user", "content": user},
-    ])
+    result = _scoring_llm.invoke(
+        [
+            {"role": "system", "content": SCORING_PROMPT},
+            {"role": "user", "content": user},
+        ]
+    )
     return result.model_dump()
 
 
@@ -173,7 +192,13 @@ def get_current_recruiter(config: RunnableConfig) -> dict:
 
 
 @tool
-def send_candidate_email(candidate: dict, subject: str, body: str, from_recruiter: dict | None = None, config: RunnableConfig = None) -> dict:
+def send_candidate_email(
+    candidate: dict,
+    subject: str,
+    body: str,
+    from_recruiter: dict | None = None,
+    config: RunnableConfig = None,
+) -> dict:
     "Draft and send an email to the given candidate. Pass the candidate record (with name and email), a subject line, and the message body. The sending recruiter defaults to the signed-in recruiter."
     if from_recruiter is None:
         user_id = (config.get("metadata") or {}).get("user_id") if config else None
@@ -193,6 +218,7 @@ def send_candidate_email(candidate: dict, subject: str, body: str, from_recruite
         "subject": subject,
         "body": body,
     }
+
 
 @tool
 def add_candidate_skill(candidate_id: str, skill: str) -> dict:
@@ -219,12 +245,20 @@ SYSTEM_PROMPT = (
     "recruiter asked for every time."
 )
 
-agent_model = ChatOpenAI(model=MODEL_NAME, temperature=0)
+agent_model = ChatAnthropic(model=MODEL_NAME, temperature=0)
 
 recruiting_agent = create_deep_agent(
     model=agent_model,
-    tools=[lookup_job_posting, build_candidate_profile, get_candidate, send_candidate_email, score_candidate, add_candidate_skill, get_current_recruiter],
-    system_prompt=SYSTEM_PROMPT
+    tools=[
+        lookup_job_posting,
+        build_candidate_profile,
+        get_candidate,
+        send_candidate_email,
+        score_candidate,
+        add_candidate_skill,
+        get_current_recruiter,
+    ],
+    system_prompt=SYSTEM_PROMPT,
 )
 
 
@@ -236,7 +270,11 @@ def run_agent(user_message, *, user_id=None, environment="production", thread_id
         {"messages": [{"role": "user", "content": user_message}]},
         config={
             "run_name": "Recruiting Assistant",
-            "metadata": {"thread_id": thread_id, "user_id": user_id, "environment": environment},
+            "metadata": {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "environment": environment,
+            },
         },
     )
     return result["messages"][-1].content
