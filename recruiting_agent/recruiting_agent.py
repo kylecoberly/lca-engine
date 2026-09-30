@@ -26,10 +26,13 @@ load_dotenv(override=True)
 os.environ.setdefault("LANGSMITH_TRACING", "true")
 
 from pydantic import BaseModel
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
+from langsmith import Client
+from langsmith.run_helpers import get_current_run_tree
 
 from . import data_service
 from .data_service import RECRUITER_IDS
@@ -175,6 +178,14 @@ def get_current_recruiter(config: RunnableConfig) -> dict:
 @tool
 def send_candidate_email(candidate: dict, subject: str, body: str, from_recruiter: dict | None = None, config: RunnableConfig = None) -> dict:
     "Draft and send an email to the given candidate. Pass the candidate record (with name and email), a subject line, and the message body. The sending recruiter defaults to the signed-in recruiter."
+    rejected = candidate.get("rejected")
+    if "rejected" not in candidate:
+        candidate_id = candidate.get("candidate_id")
+        record = data_service.get_candidate_record(candidate_id) if candidate_id else None
+        rejected = record.get("rejected") if record else None
+    run_tree = get_current_run_tree()
+    if run_tree is not None and isinstance(rejected, bool):
+        run_tree.add_metadata({"candidate_rejected": rejected})
     if from_recruiter is None:
         user_id = (config.get("metadata") or {}).get("user_id") if config else None
         from_recruiter = data_service.get_recruiter(user_id or "") or {}
@@ -228,15 +239,39 @@ recruiting_agent = create_deep_agent(
 )
 
 
-def run_agent(user_message, *, user_id=None, environment="production", thread_id=None):
-    "Invoke the recruiting agent on a single user message and return its final reply."
+class _RootRunCapture(BaseCallbackHandler):
+    def __init__(self):
+        self.run_id = None
+
+    def on_chain_start(self, serialized, inputs, *, run_id, parent_run_id=None, **kwargs):
+        if parent_run_id is None and self.run_id is None:
+            self.run_id = run_id
+
+
+def record_send_feedback(run_id, approved: bool, comment: str | None = None):
+    "Record recruiter feedback for an email send."
+    return Client().create_feedback(
+        run_id=run_id,
+        key="send_approved",
+        score=1 if approved else 0,
+        comment=comment,
+    )
+
+
+def run_agent(user_message, *, user_id=None, environment="production", thread_id=None, include_run_id=False):
+    "Invoke the recruiting agent and optionally return its root run ID with the final reply."
     thread_id = thread_id or str(uuid.uuid4())
     user_id = user_id or random.choice(RECRUITER_IDS)["recruiter_id"]
+    root_run = _RootRunCapture()
     result = recruiting_agent.invoke(
         {"messages": [{"role": "user", "content": user_message}]},
         config={
             "run_name": "Recruiting Assistant",
             "metadata": {"thread_id": thread_id, "user_id": user_id, "environment": environment},
+            "callbacks": [root_run],
         },
     )
-    return result["messages"][-1].content
+    reply = result["messages"][-1].content
+    if include_run_id:
+        return {"reply": reply, "run_id": str(root_run.run_id) if root_run.run_id else None}
+    return reply
