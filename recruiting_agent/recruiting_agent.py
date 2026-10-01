@@ -194,26 +194,28 @@ def get_current_recruiter(config: RunnableConfig) -> dict:
 @tool
 def send_candidate_email(
     candidate: dict,
+    candidate_id: str,
     subject: str,
     body: str,
     from_recruiter: dict | None = None,
-    acknowledge_rejected: bool = False,
     config: RunnableConfig = None,
 ) -> dict:
-    "Draft and send an email; sends to rejected candidates are blocked by default unless acknowledge_rejected is exactly True."
+    "Draft and send an email; rejected candidates require recruiter-controlled confirmation."
+    record = data_service.get_candidate_record(candidate_id)
+    if record is None:
+        return {"status": "failed", "error": "Unknown candidate_id; cannot verify rejection status."}
     if from_recruiter is None:
         user_id = (config.get("metadata") or {}).get("user_id") if config else None
         from_recruiter = data_service.get_recruiter(user_id or "") or {}
     to_email = candidate.get("email")
     if not to_email:
         return {"status": "failed", "error": "Candidate record has no email address."}
-    rejected = candidate.get("rejected") is True
-    candidate_id = candidate.get("candidate_id")
-    if candidate_id:
-        record = data_service.get_candidate_record(candidate_id)
-        rejected = rejected or (record is not None and record.get("rejected") is True)
-    if rejected and acknowledge_rejected is not True:
-        return {"status": "blocked", "error": "Candidate is marked rejected. Confirm with the recruiter and re-send with acknowledge_rejected=True."}
+    rejected = record.get("rejected") is True
+    rejected_send_confirmed = bool(
+        (config.get("metadata") or {}).get("rejected_send_confirmed")
+    ) if config else False
+    if rejected and not rejected_send_confirmed:
+        return {"status": "blocked", "error": "Candidate is marked rejected. Report this to the recruiter and stop; you cannot approve this send yourself."}
     message_id = "msg-" + uuid.uuid4().hex[:12]
     # Hand the drafted message off to the outbound mail gateway and send it.
     return {
@@ -247,11 +249,10 @@ SYSTEM_PROMPT = (
     "As a first step in any request, always call the get_current_recruiter tool to "
     "identify the signed-in recruiter making the request.\n\n"
     "When a recruiter asks you to email a candidate, first call get_candidate and "
-    "preserve and pass its complete returned candidate object, including "
-    "candidate_id and rejected, to send_candidate_email. If rejected is true, do "
-    "not send an interview-scheduling or advancement email; tell the recruiter "
-    "the candidate is marked rejected and request explicit confirmation. Only "
-    "after explicit confirmation may you retry with acknowledge_rejected=True."
+    "pass the returned candidate object for the recipient name and email, and pass "
+    "candidate_id explicitly to send_candidate_email. If the send is blocked because "
+    "the candidate is rejected, report that to the recruiter and do not retry the "
+    "send on your own."
 )
 
 agent_model = ChatAnthropic(model=MODEL_NAME, temperature=0)
