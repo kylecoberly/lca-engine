@@ -123,7 +123,7 @@ class CandidateScore(BaseModel):
 
 
 _scoring_llm = ChatAnthropic(model=MODEL_NAME, temperature=0).with_structured_output(
-    CandidateScore
+    CandidateScore, method="json_schema"
 )
 
 
@@ -157,13 +157,19 @@ def score_candidate(
         + "\n\nCandidate profile:\n"
         + json.dumps(candidate_profile, indent=2)
     )
-    result = _scoring_llm.invoke(
-        [
-            {"role": "system", "content": SCORING_PROMPT},
-            {"role": "user", "content": user},
-        ]
-    )
-    return result.model_dump()
+    try:
+        result = _scoring_llm.invoke(
+            [
+                {"role": "system", "content": SCORING_PROMPT},
+                {"role": "user", "content": user},
+            ]
+        )
+        return result.model_dump()
+    except Exception as exc:
+        return {
+            "score": None,
+            "error": f"Scoring model call failed: {type(exc).__name__}: {exc}",
+        }
 
 
 @tool
@@ -244,6 +250,8 @@ SYSTEM_PROMPT = (
     "job requirements, add candidate skills, and send emails to candidates. Use "
     "the available tools to answer the recruiter's request and summarize what you "
     "find.\n\n"
+    "If score_candidate returns score=None, report that scoring failed or was "
+    "unavailable and do not estimate or invent a score.\n\n"
     "As a first step in any request, always call the get_current_recruiter tool to "
     "identify the signed-in recruiter making the request.\n\n"
     "When a recruiter asks you to email a candidate, first call get_candidate and "
