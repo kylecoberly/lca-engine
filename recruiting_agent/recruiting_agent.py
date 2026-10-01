@@ -12,6 +12,10 @@ tracing), then call run_agent(...) with a recruiter request.
 
 Install:
     uv add deepagents langchain langgraph langchain-openai langsmith python-dotenv
+
+Tracing:
+    Ad-hoc structured-output probes and local experiments should set
+    LANGSMITH_PROJECT to a scratch project, or at minimum set APP_ENV=development.
 """
 
 import json
@@ -124,6 +128,14 @@ class CandidateScore(BaseModel):
 
 _scoring_llm = ChatAnthropic(model=MODEL_NAME, temperature=0).with_structured_output(
     CandidateScore
+).with_config(
+    {
+        "run_name": "score_candidate_llm",
+        "metadata": {
+            "environment": os.environ.get("APP_ENV", "production"),
+            "workflow": "candidate_scoring",
+        },
+    }
 )
 
 
@@ -271,7 +283,13 @@ recruiting_agent = create_deep_agent(
 )
 
 
-def run_agent(user_message, *, user_id=None, environment="production", thread_id=None):
+def run_agent(
+    user_message,
+    *,
+    user_id=None,
+    environment=os.environ.get("APP_ENV", "production"),
+    thread_id=None,
+):
     "Invoke the recruiting agent on a single user message and return its final reply."
     thread_id = thread_id or str(uuid.uuid4())
     user_id = user_id or random.choice(RECRUITER_IDS)["recruiter_id"]
@@ -283,6 +301,7 @@ def run_agent(user_message, *, user_id=None, environment="production", thread_id
                 "thread_id": thread_id,
                 "user_id": user_id,
                 "environment": environment,
+                "workflow": "candidate_email",
             },
         },
     )
